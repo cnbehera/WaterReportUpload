@@ -16,7 +16,6 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import requests
-from requests.auth import HTTPBasicAuth
 
 # Load environment variables
 load_dotenv()
@@ -32,8 +31,6 @@ class WaterReportAutomation:
         self.download_path = Path(os.getenv('DOWNLOAD_PATH', './downloads'))
         self.sharepoint_site = os.getenv('SHAREPOINT_SITE_URL')
         self.sharepoint_folder = os.getenv('SHAREPOINT_FOLDER_PATH')
-        self.sharepoint_username = os.getenv('SHAREPOINT_USERNAME')
-        self.sharepoint_password = os.getenv('SHAREPOINT_PASSWORD')
         self.downloaded_files = []
         self.uploaded_files = []
         self.errors = []
@@ -70,17 +67,11 @@ class WaterReportAutomation:
     async def filter_and_download_reports(self, page):
         """Filter for previous day reports and download all PDFs"""
         try:
-            # Calculate previous day's date
-            yesterday = datetime.now() - timedelta(days=1)
-            date_str = yesterday.strftime('%m/%d/%Y')
-            
-            print(f"Filtering reports for date: {date_str}")
-            
             # Wait for the page to load completely
             await page.wait_for_load_state('networkidle')
-            await asyncio.sleep(2)  # Additional wait for dynamic content
+            await asyncio.sleep(2)
             
-            # Click on "View All Reports" link first
+            # Click on "View All Reports" link
             print("Clicking 'View All Reports'...")
             try:
                 view_all_link = page.locator('xpath=//*[@id="content"]/h4/a')
@@ -95,35 +86,6 @@ class WaterReportAutomation:
                 print(f"Note: Could not click 'View All Reports': {e}")
             
             # Click on Water tab to filter for water reports
-            print("Looking for Water tab...")
-            water_tab_selectors = [
-                'a:has-text("Water")',
-                'a#lnkWater',
-                'li:has-text("Water") a',
-                '[href*="Water"]'
-            ]
-            
-            water_clicked = False
-            for selector in water_tab_selectors:
-                try:
-                    water_tab = page.locator(selector).first
-                    if await water_tab.count() > 0 and await water_tab.is_visible():
-                        print(f"Found Water tab, clicking...")
-                        await water_tab.click()
-                        await page.wait_for_load_state('networkidle')
-                        await asyncio.sleep(2)
-                        water_clicked = True
-                        print("Water tab clicked successfully!")
-                        break
-                except Exception as e:
-                    continue
-            
-            if not water_clicked:
-                print("Warning: Could not find Water tab, proceeding with all reports")
-            
-            # Look for date filter and apply if available
-            # This is optional - if no date filter exists, we'll download all water reports
-            # Click Water tab if it exists
             print("\nLooking for Water tab...")
             water_tab = page.locator('//*[@id="tabs"]/ul/li[3]/a')
             if await water_tab.count() > 0:
@@ -131,10 +93,13 @@ class WaterReportAutomation:
                 await water_tab.first.click()
                 await page.wait_for_load_state('networkidle')
                 await asyncio.sleep(2)
+            else:
+                print("Warning: Could not find Water tab, proceeding with all reports")
             
             # Calculate yesterday's date
             yesterday = datetime.now() - timedelta(days=1)
             target_date = yesterday.strftime('%Y-%m-%d')
+            #starget_date = "2025-11-10"
 
             # Type text on ContentPlaceHolder1_portalContent_txtStartDate field
             print("\nEntering start date...")
@@ -166,114 +131,211 @@ class WaterReportAutomation:
             except Exception as e:
                 print(f"Error clicking update button: {e}")
             
-            # Find all download links/buttons
-            print("Looking for PDF reports...")
+            # Check if there are any reports available in the table
+            print("Checking for available reports in the table...")
             
-            # Try multiple strategies to find download elements
-            download_selectors = [
-                'a[href$=".pdf"]',  # Direct PDF links
-                'a[href*=".pdf"]',  # PDF in URL
-                'a:has-text("Download")',  # Download text
-                'img[alt*="download" i]',  # Download images
-                'img[src*="download" i]',  # Download icon images
-                '[onclick*="download"]',  # Download onclick
-                '[onclick*=".pdf"]',  # PDF onclick
-            ]
+            # Look for checkboxes in the water reports grid
+            checkbox_selector = 'input[id*="grdWaterReports_chkWater"]'
+            checkboxes = await page.locator(checkbox_selector).all()
             
-            all_download_elements = []
-            for selector in download_selectors:
-                try:
-                    elements = await page.locator(selector).all()
-                    for elem in elements:
-                        if await elem.is_visible():
-                            all_download_elements.append(elem)
-                except:
-                    continue
+            report_count = len(checkboxes)
             
-            # Remove duplicates by getting unique elements
-            unique_elements = []
-            seen_positions = set()
-            for elem in all_download_elements:
-                try:
-                    box = await elem.bounding_box()
-                    if box:
-                        pos = (box['x'], box['y'])
-                        if pos not in seen_positions:
-                            seen_positions.add(pos)
-                            unique_elements.append(elem)
-                except:
-                    continue
-            
-            if not unique_elements:
-                print("No visible PDF download links found")
+            if report_count == 0:
+                print("No water reports found in the table for the selected date range.")
+                print("Please verify the date range or check if reports are available on the portal.")
                 return
             
-            print(f"Found {len(unique_elements)} visible download element(s)")
+            print(f"Found {report_count} water report(s) in the table")
             
-            # Extract PDF URLs from elements
-            pdf_urls = []
-            for elem in unique_elements:
-                try:
-                    href = await elem.get_attribute('href')
-                    if href and '.pdf' in href.lower():
-                        # Make URL absolute if relative
-                        if not href.startswith('http'):
-                            base_url = page.url.split('/Portal')[0]
-                            href = base_url + href if href.startswith('/') else base_url + '/' + href
-                        pdf_urls.append(href)
-                except:
-                    continue
-            
-            if not pdf_urls:
-                print("No direct PDF URLs found")
+            # Click "Select All" checkbox to select all water reports
+            print("\nSelecting all water reports...")
+            try:
+                select_all_checkbox = page.locator('#ContentPlaceHolder1_portalContent_grdWaterReports_chkAllWater')
+                if await select_all_checkbox.count() > 0:
+                    await select_all_checkbox.click()
+                    print("Clicked 'Select All' checkbox")
+                    await asyncio.sleep(2)  # Wait for postback to complete
+                else:
+                    print("Warning: 'Select All' checkbox not found")
+            except Exception as e:
+                print(f"Error clicking 'Select All' checkbox: {e}")
+                self.errors.append(f"Failed to select all reports: {e}")
                 return
             
-            print(f"Found {len(pdf_urls)} PDF URL(s), downloading...")
-            
-            # Get cookies for authentication
-            cookies = await page.context.cookies()
-            cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
-            
-            # Download each PDF using requests
-            for idx, url in enumerate(pdf_urls):
-                try:
-                    print(f"Downloading report {idx + 1}/{len(pdf_urls)}...")
-                    print(f"  URL: {url}")
+            # Click "Download Selected" button
+            print("\nClicking 'Download Selected' button...")
+            try:
+                download_button = page.locator('#ContentPlaceHolder1_portalContent_btnDownloadSelectedWater')
+                if await download_button.count() > 0:
+                    # Create a date-specific folder
+                    today_str = datetime.now().strftime('%Y-%m-%d')
+                    date_folder = self.download_path / today_str
+                    date_folder.mkdir(parents=True, exist_ok=True)
+                    print(f"Created/using folder: {date_folder}")
                     
-                    # Download using requests with cookies for authentication
-                    response = requests.get(url, cookies=cookie_dict, timeout=30)
-                    
-                    if response.status_code == 200:
-                        # Extract filename from URL or Content-Disposition header
-                        filename = url.split('/')[-1]
-                        if 'Content-Disposition' in response.headers:
-                            cd = response.headers['Content-Disposition']
-                            filename_match = re.findall('filename=(.+)', cd)
-                            if filename_match:
-                                filename = filename_match[0].strip('\"')
+                    try:
+                        # Try to handle as download first
+                        async with page.expect_download(timeout=10000) as download_info:
+                            await download_button.click()
+                            print("Clicked 'Download Selected' button")
                         
-                        if not filename.endswith('.pdf'):
-                            filename = f"water_report_{idx+1}.pdf"
+                        # Get the download object
+                        download = await download_info.value
                         
-                        filepath = self.download_path / filename
-                        with open(filepath, 'wb') as f:
-                            f.write(response.content)
+                        # Save the downloaded file to date-specific folder
+                        suggested_filename = download.suggested_filename
                         
-                        self.downloaded_files.append(filepath)
-                        print(f"  Downloaded: {filename} ({len(response.content)} bytes)")
-                    else:
-                        error_msg = f"Failed to download {url}: HTTP {response.status_code}"
-                        print(error_msg)
-                        self.errors.append(error_msg)
+                        # Replace hyphens with underscores in filename
+                        suggested_filename = suggested_filename.replace('-', '_')
+                        
+                        filepath = date_folder / suggested_filename
+                        
+                        await download.save_as(filepath)
+                        print(f"Downloaded file: {suggested_filename} to {date_folder}")
+                        
+                        # Check if it's a zip file (multiple reports) or single PDF
+                        if suggested_filename.lower().endswith('.zip'):
+                            print(f"Downloaded ZIP file containing {report_count} report(s)")
+                            # Extract ZIP file
+                            try:
+                                import zipfile
+                                print(f"Extracting ZIP file...")
+                                with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                                    zip_ref.extractall(date_folder)
+                                    extracted_files = zip_ref.namelist()
+                                    print(f"Extracted {len(extracted_files)} file(s)")
+                                    
+                                    # Add extracted PDF files to downloaded_files list
+                                    for filename in extracted_files:
+                                        if filename.lower().endswith('.pdf'):
+                                            # Replace hyphens with underscores in filename
+                                            new_filename = filename.replace('-', '_')
+                                            old_path = date_folder / filename
+                                            new_path = date_folder / new_filename
+                                            
+                                            # Rename the file if needed
+                                            if old_path != new_path:
+                                                old_path.rename(new_path)
+                                            
+                                            self.downloaded_files.append(new_path)
+                                            print(f"  - {new_filename}")
+                                
+                                # Remove the ZIP file after extraction
+                                filepath.unlink()
+                                print("ZIP file extracted and removed")
+                            except Exception as e:
+                                error_msg = f"Error extracting ZIP file: {e}"
+                                print(error_msg)
+                                self.errors.append(error_msg)
+                        else:
+                            # Single PDF file
+                            self.downloaded_files.append(filepath)
+                            print(f"Extracted {1} file(s)")
+                            print(f"  - {suggested_filename}")
+                        
+                    except Exception as download_error:
+                        # If download didn't work, PDF likely opened in new tab or current page navigated
+                        print(f"Download event not triggered, waiting for page navigation...")
+                        
+                        # Click the button if not already clicked
+                        if 'download_info' not in locals():
+                            await download_button.click()
+                            print("Clicked 'Download Selected' button")
+                        
+                        # Wait for navigation or new page
+                        await asyncio.sleep(3)
+                        
+                        # Check if current page has PDF
+                        current_url = page.url
+                        if '.pdf' in current_url.lower():
+                            print(f"PDF loaded in current page: {current_url}")
+                            
+                            # Get cookies for authentication
+                            cookies = await page.context.cookies()
+                            cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
+                            
+                            # Download the PDF using requests
+                            response = requests.get(current_url, cookies=cookie_dict, timeout=30)
+                            
+                            if response.status_code == 200:
+                                filename = current_url.split('/')[-1]
+                                if '?' in filename:
+                                    filename = filename.split('?')[0]
+                                if not filename.endswith('.pdf'):
+                                    filename = f"water_report_{datetime.now().strftime('%Y%m%d')}.pdf"
+                                
+                                # Replace hyphens with underscores in filename
+                                filename = filename.replace('-', '_')
+                                
+                                filepath = date_folder / filename
+                                with open(filepath, 'wb') as f:
+                                    f.write(response.content)
+                                
+                                self.downloaded_files.append(filepath)
+                                print(f"Extracted {1} file(s)")
+                                print(f"  - {filename}")
+                            else:
+                                error_msg = f"Failed to download PDF: HTTP {response.status_code}"
+                                print(error_msg)
+                                self.errors.append(error_msg)
+                        else:
+                            # Check for new pages/tabs
+                            pages = page.context.pages
+                            print(f"Found {len(pages)} page(s) open")
+                            
+                            for idx, p in enumerate(pages):
+                                url = p.url
+                                print(f"Page {idx}: {url}")
+                                if '.pdf' in url.lower():
+                                    print(f"Found PDF in page {idx}")
+                                    
+                                    # Get cookies
+                                    cookies = await page.context.cookies()
+                                    cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
+                                    
+                                    # Download the PDF
+                                    response = requests.get(url, cookies=cookie_dict, timeout=30)
+                                    
+                                    if response.status_code == 200:
+                                        filename = url.split('/')[-1]
+                                        if '?' in filename:
+                                            filename = filename.split('?')[0]
+                                        if not filename.endswith('.pdf'):
+                                            filename = f"water_report_{datetime.now().strftime('%Y%m%d')}.pdf"
+                                        
+                                        # Replace hyphens with underscores in filename
+                                        filename = filename.replace('-', '_')
+                                        
+                                        filepath = date_folder / filename
+                                        with open(filepath, 'wb') as f:
+                                            f.write(response.content)
+                                        
+                                        self.downloaded_files.append(filepath)
+                                        print(f"Extracted {1} file(s)")
+                                        print(f"  - {filename}")
+                                        
+                                        # Close the PDF tab if it's not the main page
+                                        if p != page:
+                                            await p.close()
+                                    break
+                            
+                            if not self.downloaded_files:
+                                error_msg = "No PDF found in any open pages"
+                                print(error_msg)
+                                self.errors.append(error_msg)
+                                return
                     
-                    await asyncio.sleep(1)
+                    print(f"\nSuccessfully downloaded {len(self.downloaded_files)} report(s) to {date_folder}")
                     
-                except Exception as e:
-                    error_msg = f"Error downloading {url}: {str(e)}"
-                    print(error_msg)
-                    self.errors.append(error_msg)
-            
-            print(f"Successfully downloaded {len(self.downloaded_files)} report(s)")
+                else:
+                    print("Warning: 'Download Selected' button not found")
+                    self.errors.append("Download Selected button not found")
+                    
+            except Exception as e:
+                error_msg = f"Error downloading reports: {e}"
+                print(error_msg)
+                self.errors.append(error_msg)
+                return
             
         except Exception as e:
             error_msg = f"Error during report filtering/download: {str(e)}"
@@ -439,6 +501,9 @@ class WaterReportAutomation:
             if not self.errors and self.downloaded_files and len(self.uploaded_files) == len(self.downloaded_files):
                 status = "SUCCESS"
                 subject = "✅ Water Reports Automation - Success"
+            elif not self.errors and not self.downloaded_files:
+                status = "NO REPORTS FOUND"
+                subject = "ℹ️ Water Reports Automation - No Reports Found"
             elif self.downloaded_files and self.uploaded_files:
                 status = "PARTIAL SUCCESS"
                 subject = "⚠️ Water Reports Automation - Partial Success"
@@ -446,22 +511,42 @@ class WaterReportAutomation:
                 status = "ERROR"
                 subject = "❌ Water Reports Automation - Error"
             
-            # Create email body
-            body = f"""
-Water Reports Automation Summary
+            # Create email body with URL-decoded filenames
+            import urllib.parse
+            
+            def clean_filename(name):
+                """Remove URL encoding like %20 and clean up filename"""
+                return urllib.parse.unquote(str(name))
+            
+            downloaded_list = "\n".join(
+                f"  {i+1}. {clean_filename(f.name)}" 
+                for i, f in enumerate(self.downloaded_files)
+            ) if self.downloaded_files else "  None"
+            
+            uploaded_list = "\n".join(
+                f"  {i+1}. {clean_filename(f)}" 
+                for i, f in enumerate(self.uploaded_files)
+            ) if self.uploaded_files else "  None"
+            
+            error_list = "\n".join(
+                f"  - {e}" 
+                for e in self.errors
+            ) if self.errors else "  None"
+            
+            body = f"""Water Reports Automation Summary
 {'=' * 50}
 
 Status: {status}
 Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-Downloaded Reports: {len(self.downloaded_files)}
-{chr(10).join(f"  - {f.name}" for f in self.downloaded_files) if self.downloaded_files else "  None"}
+Downloaded Reports ({len(self.downloaded_files)}):
+{downloaded_list}
 
-Uploaded to SharePoint: {len(self.uploaded_files)}
-{chr(10).join(f"  - {f}" for f in self.uploaded_files) if self.uploaded_files else "  None"}
+Uploaded to SharePoint ({len(self.uploaded_files)}):
+{uploaded_list}
 
-Errors: {len(self.errors)}
-{chr(10).join(f"  - {e}" for e in self.errors) if self.errors else "  None"}
+Errors ({len(self.errors)}):
+{error_list}
 
 {'=' * 50}
 This is an automated message from the Meras Water Report Automation system.
@@ -495,16 +580,32 @@ This is an automated message from the Meras Water Report Automation system.
         print()
         
         async with async_playwright() as p:
+            # Create a date-specific download folder
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            date_folder = self.download_path / today_str
+            date_folder.mkdir(parents=True, exist_ok=True)
+            
             # Launch browser - using system Chrome instead of Chromium
             browser = await p.chromium.launch(
                 channel='chrome',  # Use system Chrome browser
                 headless=False,  # Running with visible browser
-                slow_mo=100  # Slow down by 100ms to improve stability
+                slow_mo=100,  # Slow down by 100ms to improve stability
+                args=['--start-maximized']  # Launch in maximized window
             )
+            
             context = await browser.new_context(
-                accept_downloads=True
+                accept_downloads=True,
+                no_viewport=True  # Use full window size instead of fixed viewport
             )
+            
             page = await context.new_page()
+            
+            # Set up CDP session to configure download behavior
+            cdp = await context.new_cdp_session(page)
+            await cdp.send('Browser.setDownloadBehavior', {
+                'behavior': 'allow',
+                'downloadPath': str(date_folder)
+            })
             
             try:
                 # Step 1: Login
