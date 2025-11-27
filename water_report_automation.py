@@ -80,6 +80,20 @@ class WaterReportAutomation:
             await page.wait_for_load_state('networkidle')
             await asyncio.sleep(2)  # Additional wait for dynamic content
             
+            # Click on "View All Reports" link first
+            print("Clicking 'View All Reports'...")
+            try:
+                view_all_link = page.locator('xpath=//*[@id="content"]/h4/a')
+                if await view_all_link.count() > 0:
+                    await view_all_link.click()
+                    await page.wait_for_load_state('networkidle')
+                    print("Clicked 'View All Reports' successfully!")
+                    await asyncio.sleep(2)
+                else:
+                    print("'View All Reports' link not found, continuing...")
+            except Exception as e:
+                print(f"Note: Could not click 'View All Reports': {e}")
+            
             # Click on Water tab to filter for water reports
             print("Looking for Water tab...")
             water_tab_selectors = [
@@ -109,21 +123,48 @@ class WaterReportAutomation:
             
             # Look for date filter and apply if available
             # This is optional - if no date filter exists, we'll download all water reports
+            # Click Water tab if it exists
+            print("\nLooking for Water tab...")
+            water_tab = page.locator('//*[@id="tabs"]/ul/li[3]/a')
+            if await water_tab.count() > 0:
+                print("Found Water tab, clicking...")
+                await water_tab.first.click()
+                await page.wait_for_load_state('networkidle')
+                await asyncio.sleep(2)
+            
+            # Calculate yesterday's date
+            yesterday = datetime.now() - timedelta(days=1)
+            target_date = yesterday.strftime('%Y-%m-%d')
+
+            # Type text on ContentPlaceHolder1_portalContent_txtStartDate field
+            print("\nEntering start date...")
             try:
-                date_inputs = await page.locator('input[type="date"], input[placeholder*="date" i]').all()
-                if date_inputs:
-                    print(f"Found {len(date_inputs)} date filter(s), applying date: {date_str}")
-                    for date_input in date_inputs:
-                        await date_input.fill(date_str)
-                    
-                    # Look for search/filter button
-                    filter_btn = page.locator('button:has-text("Search"), button:has-text("Filter"), input[value*="Search"]').first
-                    if await filter_btn.count() > 0:
-                        await filter_btn.click()
-                        await page.wait_for_load_state('networkidle')
-                        await asyncio.sleep(2)
+                # For input type="date", we must use YYYY-MM-DD format with page.fill()
+                await page.fill('#ContentPlaceHolder1_portalContent_txtStartDate', target_date)
+                print(f"Filled start date: {target_date}")
+                await asyncio.sleep(1)
             except Exception as e:
-                print(f"Note: Date filtering not available or failed: {str(e)}")
+                print(f"Error entering start date: {e}")
+
+            # Type text on ContentPlaceHolder1_portalContent_txtEndDate field
+            print("\nEntering end date...")
+            try:
+                # For input type="date", we must use YYYY-MM-DD format with page.fill()
+                await page.fill('#ContentPlaceHolder1_portalContent_txtEndDate', target_date)
+                print(f"Filled end date: {target_date}")
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"Error entering end date: {e}")
+
+            # Click Update Date Range button
+            print("\nClicking 'Update Date Range'...")
+            try:
+                await page.click('#ContentPlaceHolder1_portalContent_btnSubmitDateChanges')
+                print("Clicked 'Update Date Range' button")
+                await page.wait_for_load_state('networkidle')
+                await asyncio.sleep(2)
+            except Exception as e:
+                print(f"Error clicking update button: {e}")
             
             # Find all download links/buttons
             print("Looking for PDF reports...")
@@ -454,8 +495,12 @@ This is an automated message from the Meras Water Report Automation system.
         print()
         
         async with async_playwright() as p:
-            # Launch browser
-            browser = await p.chromium.launch(headless=False)  # Set to True for production
+            # Launch browser - using system Chrome instead of Chromium
+            browser = await p.chromium.launch(
+                channel='chrome',  # Use system Chrome browser
+                headless=False,  # Running with visible browser
+                slow_mo=100  # Slow down by 100ms to improve stability
+            )
             context = await browser.new_context(
                 accept_downloads=True
             )
