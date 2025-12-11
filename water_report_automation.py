@@ -12,9 +12,6 @@ from pathlib import Path
 import asyncio
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 import requests
 
 # Load environment variables
@@ -342,6 +339,54 @@ class WaterReportAutomation:
             print(error_msg)
             self.errors.append(error_msg)
     
+    def _get_graph_token(self):
+        """Get Microsoft Graph API access token (shared for SharePoint and Email)"""
+        try:
+            import msal
+            
+            tenant_id = os.getenv('SHAREPOINT_TENANT_ID')
+            client_id = os.getenv('SHAREPOINT_CLIENT_ID')
+            client_secret = os.getenv('SHAREPOINT_CLIENT_SECRET')
+            
+            # Validate configuration
+            if not all([tenant_id, client_id, client_secret]):
+                error_msg = "Graph API credentials not configured. Please set SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, and SHAREPOINT_CLIENT_SECRET in .env"
+                print(error_msg)
+                self.errors.append(error_msg)
+                return None
+            
+            # Authenticate using MSAL
+            authority = f"https://login.microsoftonline.com/{tenant_id}"
+            scope = ["https://graph.microsoft.com/.default"]
+            
+            app = msal.ConfidentialClientApplication(
+                client_id,
+                authority=authority,
+                client_credential=client_secret
+            )
+            
+            # Acquire token
+            result = app.acquire_token_for_client(scopes=scope)
+            
+            if "access_token" not in result:
+                error_msg = f"Failed to acquire access token: {result.get('error_description', 'Unknown error')}"
+                print(error_msg)
+                self.errors.append(error_msg)
+                return None
+            
+            return result["access_token"]
+            
+        except ImportError:
+            error_msg = "MSAL library not installed. Run: pip install msal"
+            print(error_msg)
+            self.errors.append(error_msg)
+            return None
+        except Exception as e:
+            error_msg = f"Authentication error: {str(e)}"
+            print(error_msg)
+            self.errors.append(error_msg)
+            return None
+    
     def upload_to_sharepoint(self):
         """Upload downloaded PDFs to SharePoint using Microsoft Graph API"""
         if not self.downloaded_files:
@@ -349,20 +394,21 @@ class WaterReportAutomation:
             return
         
         try:
-            import msal
-            
             print(f"Connecting to SharePoint via Microsoft Graph API...")
+            
+            # Get access token
+            access_token = self._get_graph_token()
+            if not access_token:
+                return
+            
+            print("Successfully authenticated with Microsoft Graph API")
             
             # Get configuration
             site_url = self.sharepoint_site
             folder_path = self.sharepoint_folder
-            tenant_id = os.getenv('SHAREPOINT_TENANT_ID')
-            client_id = os.getenv('SHAREPOINT_CLIENT_ID')
-            client_secret = os.getenv('SHAREPOINT_CLIENT_SECRET')
             
-            # Validate configuration
-            if not all([site_url, tenant_id, client_id, client_secret]):
-                error_msg = "SharePoint Graph API credentials not configured. Please set SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, and SHAREPOINT_CLIENT_SECRET in .env"
+            if not site_url:
+                error_msg = "SharePoint site URL not configured"
                 print(error_msg)
                 self.errors.append(error_msg)
                 return
@@ -386,28 +432,6 @@ class WaterReportAutomation:
                 print(error_msg)
                 self.errors.append(error_msg)
                 return
-            
-            # Authenticate using MSAL
-            authority = f"https://login.microsoftonline.com/{tenant_id}"
-            scope = ["https://graph.microsoft.com/.default"]
-            
-            app = msal.ConfidentialClientApplication(
-                client_id,
-                authority=authority,
-                client_credential=client_secret
-            )
-            
-            # Acquire token
-            result = app.acquire_token_for_client(scopes=scope)
-            
-            if "access_token" not in result:
-                error_msg = f"Failed to acquire access token: {result.get('error_description', 'Unknown error')}"
-                print(error_msg)
-                self.errors.append(error_msg)
-                return
-            
-            access_token = result["access_token"]
-            print("Successfully authenticated with Microsoft Graph API")
             
             # Get site ID
             headers = {
@@ -478,38 +502,46 @@ class WaterReportAutomation:
             
             print(f"Successfully uploaded {len(self.uploaded_files)} file(s) to SharePoint")
             
-        except ImportError:
-            error_msg = "MSAL library not installed. Run: pip install msal"
-            print(error_msg)
-            self.errors.append(error_msg)
         except Exception as e:
             error_msg = f"SharePoint Graph API error: {str(e)}"
             print(error_msg)
             self.errors.append(error_msg)
     
     def send_notification_email(self):
-        """Send email notification about the automation results"""
+        """Send email notification about the automation results using Microsoft Graph API"""
         try:
-            smtp_server = os.getenv('SMTP_SERVER')
-            smtp_port = int(os.getenv('SMTP_PORT', 587))
-            smtp_username = os.getenv('SMTP_USERNAME')
-            smtp_password = os.getenv('SMTP_PASSWORD')
-            email_from = os.getenv('EMAIL_FROM')
+            email_sender = os.getenv('EMAIL_SENDER_ADDRESS')
             email_to = os.getenv('EMAIL_TO')
+            
+            if not email_sender or not email_to:
+                error_msg = "Email configuration missing. Please set EMAIL_SENDER_ADDRESS and EMAIL_TO in .env"
+                print(error_msg)
+                self.errors.append(error_msg)
+                return
+            
+            # Get access token
+            print("Authenticating for email sending...")
+            access_token = self._get_graph_token()
+            if not access_token:
+                return
             
             # Determine status
             if not self.errors and self.downloaded_files and len(self.uploaded_files) == len(self.downloaded_files):
                 status = "SUCCESS"
                 subject = "✅ Water Reports Automation - Success"
+                status_color = "#28a745"  # Green
             elif not self.errors and not self.downloaded_files:
                 status = "NO REPORTS FOUND"
                 subject = "ℹ️ Water Reports Automation - No Reports Found"
+                status_color = "#17a2b8"  # Blue
             elif self.downloaded_files and self.uploaded_files:
                 status = "PARTIAL SUCCESS"
                 subject = "⚠️ Water Reports Automation - Partial Success"
+                status_color = "#ffc107"  # Yellow
             else:
                 status = "ERROR"
                 subject = "❌ Water Reports Automation - Error"
+                status_color = "#dc3545"  # Red
             
             # Create email body with URL-decoded filenames
             import urllib.parse
@@ -518,58 +550,114 @@ class WaterReportAutomation:
                 """Remove URL encoding like %20 and clean up filename"""
                 return urllib.parse.unquote(str(name))
             
-            downloaded_list = "\n".join(
-                f"  {i+1}. {clean_filename(f.name)}" 
+            downloaded_list = "<br>".join(
+                f"&nbsp;&nbsp;{i+1}. {clean_filename(f.name)}" 
                 for i, f in enumerate(self.downloaded_files)
-            ) if self.downloaded_files else "  None"
+            ) if self.downloaded_files else "&nbsp;&nbsp;None"
             
-            uploaded_list = "\n".join(
-                f"  {i+1}. {clean_filename(f)}" 
+            uploaded_list = "<br>".join(
+                f"&nbsp;&nbsp;{i+1}. {clean_filename(f)}" 
                 for i, f in enumerate(self.uploaded_files)
-            ) if self.uploaded_files else "  None"
+            ) if self.uploaded_files else "&nbsp;&nbsp;None"
             
-            error_list = "\n".join(
-                f"  - {e}" 
+            error_list = "<br>".join(
+                f"&nbsp;&nbsp;• {e}" 
                 for e in self.errors
-            ) if self.errors else "  None"
+            ) if self.errors else "&nbsp;&nbsp;None"
             
-            body = f"""Water Reports Automation Summary
-{'=' * 50}
-
-Status: {status}
-Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-Downloaded Reports ({len(self.downloaded_files)}):
-{downloaded_list}
-
-Uploaded to SharePoint ({len(self.uploaded_files)}):
-{uploaded_list}
-
-Errors ({len(self.errors)}):
-{error_list}
-
-{'=' * 50}
-This is an automated message from the Meras Water Report Automation system.
-"""
+            # Create HTML email body
+            html_body = f"""
+            <html>
+            <head>
+                <style>
+                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                    .header {{ background-color: {status_color}; color: white; padding: 20px; border-radius: 5px 5px 0 0; }}
+                    .content {{ background-color: #f9f9f9; padding: 20px; border: 1px solid #ddd; border-radius: 0 0 5px 5px; }}
+                    .section {{ margin-bottom: 20px; }}
+                    .section-title {{ font-weight: bold; color: #555; margin-bottom: 10px; }}
+                    .footer {{ margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #777; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h2 style="margin: 0;">Water Reports Automation</h2>
+                        <p style="margin: 5px 0 0 0;">Status: {status}</p>
+                    </div>
+                    <div class="content">
+                        <div class="section">
+                            <div class="section-title">Date:</div>
+                            {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                        </div>
+                        
+                        <div class="section">
+                            <div class="section-title">Downloaded Reports ({len(self.downloaded_files)}):</div>
+                            {downloaded_list}
+                        </div>
+                        
+                        <div class="section">
+                            <div class="section-title">Uploaded to SharePoint ({len(self.uploaded_files)}):</div>
+                            {uploaded_list}
+                        </div>
+                        
+                        <div class="section">
+                            <div class="section-title">Errors ({len(self.errors)}):</div>
+                            {error_list}
+                        </div>
+                        
+                        <div class="footer">
+                            This is an automated message from the Meras Water Report Automation system.
+                        </div>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
             
-            # Create message
-            msg = MIMEMultipart()
-            msg['From'] = email_from
-            msg['To'] = email_to
-            msg['Subject'] = subject
-            msg.attach(MIMEText(body, 'plain'))
+            # Prepare Graph API request
+            # Extract just the email address if sender has a name format
+            sender_email = email_sender.split('<')[-1].strip('>') if '<' in email_sender else email_sender
             
-            # Send email
-            print("Sending notification email...")
-            with smtplib.SMTP(smtp_server, smtp_port) as server:
-                server.starttls()
-                server.login(smtp_username, smtp_password)
-                server.send_message(msg)
+            email_data = {
+                "message": {
+                    "subject": subject,
+                    "body": {
+                        "contentType": "HTML",
+                        "content": html_body
+                    },
+                    "toRecipients": [
+                        {
+                            "emailAddress": {
+                                "address": email_to
+                            }
+                        }
+                    ]
+                },
+                "saveToSentItems": "true"
+            }
             
-            print("Notification email sent successfully!")
+            # Send email via Graph API
+            print("Sending notification email via Microsoft Graph API...")
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            send_mail_url = f"https://graph.microsoft.com/v1.0/users/{sender_email}/sendMail"
+            response = requests.post(send_mail_url, headers=headers, json=email_data)
+            
+            if response.status_code == 202:
+                print("Notification email sent successfully!")
+            else:
+                error_msg = f"Failed to send email: HTTP {response.status_code} - {response.text}"
+                print(error_msg)
+                self.errors.append(error_msg)
             
         except Exception as e:
-            print(f"Error sending notification email: {str(e)}")
+            error_msg = f"Error sending notification email: {str(e)}"
+            print(error_msg)
+            self.errors.append(error_msg)
     
     async def run(self):
         """Main execution method"""

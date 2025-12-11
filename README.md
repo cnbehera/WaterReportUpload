@@ -3,8 +3,8 @@
 This Python automation script uses Playwright to:
 - Login to Precision Agri-Lab portal
 - Filter and download water reports from the previous day
-- Upload reports to SharePoint
-- Send email notifications
+- Upload reports to SharePoint using Microsoft Graph API
+- Send email notifications using Microsoft Graph API
 
 ## Setup
 
@@ -23,23 +23,25 @@ This Python automation script uses Playwright to:
    - Update SharePoint and email settings in `.env`
    - Portal credentials are already configured
 
-4. **Update SharePoint settings in `.env`:**
+4. **Configure Microsoft Graph API:**
    
-   > **Note:** SharePoint upload now uses Microsoft Graph API for better security and reliability.
-   > See [SHAREPOINT_SETUP.md](SHAREPOINT_SETUP.md) for detailed setup instructions.
+   > **Note:** Both SharePoint upload and email notifications now use Microsoft Graph API for better security and reliability.
+   > See [GRAPH_API_SETUP.md](GRAPH_API_SETUP.md) for detailed setup instructions.
    
+   **Required Azure AD App Permissions:**
+   - `Sites.ReadWrite.All` - for SharePoint upload
+   - `Files.ReadWrite.All` - for SharePoint upload
+   - `Mail.Send` - for email notifications
+   
+   **SharePoint Configuration:**
    - `SHAREPOINT_SITE_URL`: Your SharePoint site URL (e.g., `https://tenant.sharepoint.com/sites/sitename`)
    - `SHAREPOINT_FOLDER_PATH`: Folder name only (e.g., `WaterReport` or `Water Reports`)
    - `SHAREPOINT_TENANT_ID`: Azure AD tenant ID
    - `SHAREPOINT_CLIENT_ID`: Azure AD app client ID
    - `SHAREPOINT_CLIENT_SECRET`: Azure AD app client secret
-
-5. **Update email settings in `.env`:**
-   - `SMTP_SERVER`: SMTP server (e.g., smtp.gmail.com)
-   - `SMTP_PORT`: SMTP port (usually 587)
-   - `SMTP_USERNAME`: Email username
-   - `SMTP_PASSWORD`: Email password or app-specific password
-   - `EMAIL_FROM`: Sender email address
+   
+   **Email Configuration:**
+   - `EMAIL_SENDER_ADDRESS`: Email address to send from (must be a valid mailbox in your tenant)
    - `EMAIL_TO`: Recipient email address
 
 ## Usage
@@ -54,8 +56,8 @@ python water_report_automation.py
 - **Automated Login**: Logs into the Precision Agri-Lab portal
 - **Date Filtering**: Automatically filters for previous day's reports
 - **PDF Download**: Downloads all available PDF reports
-- **SharePoint Upload**: Uploads downloaded files to designated SharePoint folder
-- **Email Notifications**: Sends status emails (success/partial/error)
+- **SharePoint Upload**: Uploads downloaded files to SharePoint using Microsoft Graph API
+- **Email Notifications**: Sends HTML-formatted status emails via Microsoft Graph API (success/partial/error)
 - **Error Handling**: Comprehensive error tracking and reporting
 
 ## Scheduling
@@ -80,5 +82,5 @@ crontab -e
 
 - **Login fails**: Verify portal credentials in `.env`
 - **No reports found**: Check date filtering logic matches portal interface
-- **SharePoint upload fails**: Verify SharePoint credentials and folder path
-- **Email not sent**: Check SMTP settings and credentials
+- **SharePoint upload fails**: See [GRAPH_API_SETUP.md](GRAPH_API_SETUP.md) troubleshooting section
+- **Email not sent**: Verify `Mail.Send` permission is granted and sender email is valid
