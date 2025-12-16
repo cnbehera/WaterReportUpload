@@ -97,14 +97,14 @@ class WaterReportAutomation:
             # Calculate yesterday's date
             yesterday = datetime.now() - timedelta(days=1)
             target_date = yesterday.strftime('%Y-%m-%d')
-            #starget_date = "2025-11-10"
+            starget_date = "2025-11-11"
 
             # Type text on ContentPlaceHolder1_portalContent_txtStartDate field
             print("\nEntering start date...")
             try:
                 # For input type="date", we must use YYYY-MM-DD format with page.fill()
-                await page.fill('#ContentPlaceHolder1_portalContent_txtStartDate', target_date)
-                print(f"Filled start date: {target_date}")
+                await page.fill('#ContentPlaceHolder1_portalContent_txtStartDate', starget_date)
+                print(f"Filled start date: {starget_date}")
                 await asyncio.sleep(1)
             except Exception as e:
                 print(f"Error entering start date: {e}")
@@ -115,7 +115,7 @@ class WaterReportAutomation:
                 # For input type="date", we must use YYYY-MM-DD format with page.fill()
                 await page.fill('#ContentPlaceHolder1_portalContent_txtEndDate', target_date)
                 print(f"Filled end date: {target_date}")
-                await asyncio.sleep(1)
+                await asyncio.sleep(5)
             except Exception as e:
                 print(f"Error entering end date: {e}")
 
@@ -125,7 +125,7 @@ class WaterReportAutomation:
                 await page.click('#ContentPlaceHolder1_portalContent_btnSubmitDateChanges')
                 print("Clicked 'Update Date Range' button")
                 await page.wait_for_load_state('networkidle')
-                await asyncio.sleep(2)
+                await asyncio.sleep(5)
             except Exception as e:
                 print(f"Error clicking update button: {e}")
             
@@ -137,12 +137,24 @@ class WaterReportAutomation:
             table_selector = '#ContentPlaceHolder1_portalContent_grdWaterReports'
             
             # Get all rows in the table body (skip header row)
-            rows = await page.locator(f'{table_selector} tr[id*="grdWaterReports"]').all()
+            # Use tbody tr selector as confirmed by debug script
+            rows = await page.locator(f'{table_selector} tbody tr').all()
+            
+            print(f"DEBUG: Found {len(rows)} row(s) in tbody")
             
             if len(rows) == 0:
                 print("No water reports found in the table for the selected date range.")
                 print("Please verify the date range or check if reports are available on the portal.")
                 return
+            
+            # Check if the only row is the "No Water Reports Found" message
+            if len(rows) == 1:
+                first_row_text = await rows[0].inner_text()
+                print(f"DEBUG: First row text: '{first_row_text}'")
+                if "no water reports found" in first_row_text.lower():
+                    print("No water reports found in the table for the selected date range.")
+                    print("Please verify the date range or check if reports are available on the portal.")
+                    return
             
             print(f"Found {len(rows)} row(s) in the table")
             
@@ -200,170 +212,102 @@ class WaterReportAutomation:
                 print("No reports with 'water' status found to download.")
                 return
             
-            # Click "Download Selected" button
+            # Click "Download Selected" button and get the download URL
             print("\nClicking 'Download Selected' button...")
             try:
                 download_button = page.locator('#ContentPlaceHolder1_portalContent_btnDownloadSelectedWater')
                 if await download_button.count() > 0:
-                    # Create a date-specific folder
+                    # Create a date-specific folder for temporary storage if needed
                     today_str = datetime.now().strftime('%Y-%m-%d')
                     date_folder = self.download_path / today_str
                     date_folder.mkdir(parents=True, exist_ok=True)
-                    print(f"Created/using folder: {date_folder}")
+                    print(f"Using folder: {date_folder}")
                     
                     try:
-                        # Try to handle as download first
-                        async with page.expect_download(timeout=10000) as download_info:
+                        # Click and wait for download to start
+                        async with page.expect_download(timeout=15000) as download_info:
                             await download_button.click()
                             print("Clicked 'Download Selected' button")
                         
                         # Get the download object
                         download = await download_info.value
-                        
-                        # Save the downloaded file to date-specific folder
                         suggested_filename = download.suggested_filename
                         
-                        # Replace hyphens with underscores in filename
-                        suggested_filename = suggested_filename.replace('-', '_')
+                        print(f"Download started: {suggested_filename}")
                         
-                        filepath = date_folder / suggested_filename
+                        # Get the download URL
+                        download_url = download.url
+                        print(f"Download URL: {download_url}")
                         
-                        await download.save_as(filepath)
-                        print(f"Downloaded file: {suggested_filename} to {date_folder}")
+                        # Get cookies for authentication
+                        cookies = await page.context.cookies()
+                        cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
                         
-                        # Check if it's a zip file (multiple reports) or single PDF
-                        if suggested_filename.lower().endswith('.zip'):
-                            print(f"Downloaded ZIP file containing {report_count} report(s)")
-                            # Extract ZIP file
-                            try:
+                        # Download the file using HTTP request
+                        print("Downloading file via HTTP...")
+                        response = requests.get(download_url, cookies=cookie_dict, timeout=60)
+                        
+                        if response.status_code == 200:
+                            print(f"Successfully downloaded {len(response.content)} bytes")
+                            
+                            # Check if it's a ZIP file
+                            if suggested_filename.lower().endswith('.zip'):
+                                print(f"Processing ZIP file...")
+                                
+                                # Extract ZIP in memory
                                 import zipfile
-                                print(f"Extracting ZIP file...")
-                                with zipfile.ZipFile(filepath, 'r') as zip_ref:
-                                    zip_ref.extractall(date_folder)
-                                    extracted_files = zip_ref.namelist()
-                                    print(f"Extracted {len(extracted_files)} file(s)")
+                                import io
+                                
+                                try:
+                                    zip_buffer = io.BytesIO(response.content)
+                                    with zipfile.ZipFile(zip_buffer, 'r') as zip_ref:
+                                        extracted_files = zip_ref.namelist()
+                                        print(f"Found {len(extracted_files)} file(s) in ZIP")
+                                        
+                                        # Process each PDF file
+                                        for filename in extracted_files:
+                                            if filename.lower().endswith('.pdf'):
+                                                # Read PDF content from ZIP
+                                                pdf_content = zip_ref.read(filename)
+                                                
+                                                # Replace hyphens with underscores in filename
+                                                clean_filename = filename.replace('-', '_')
+                                                
+                                                # Save to temporary location for upload
+                                                temp_filepath = date_folder / clean_filename
+                                                with open(temp_filepath, 'wb') as f:
+                                                    f.write(pdf_content)
+                                                
+                                                self.downloaded_files.append(temp_filepath)
+                                                print(f"  - Extracted: {clean_filename}")
                                     
-                                    # Add extracted PDF files to downloaded_files list
-                                    for filename in extracted_files:
-                                        if filename.lower().endswith('.pdf'):
-                                            # Replace hyphens with underscores in filename
-                                            new_filename = filename.replace('-', '_')
-                                            old_path = date_folder / filename
-                                            new_path = date_folder / new_filename
-                                            
-                                            # Rename the file if needed
-                                            if old_path != new_path:
-                                                old_path.rename(new_path)
-                                            
-                                            self.downloaded_files.append(new_path)
-                                            print(f"  - {new_filename}")
+                                    print(f"Successfully extracted {len(self.downloaded_files)} PDF(s)")
+                                    
+                                except Exception as e:
+                                    error_msg = f"Error extracting ZIP file: {e}"
+                                    print(error_msg)
+                                    self.errors.append(error_msg)
+                            else:
+                                # Single PDF file
+                                clean_filename = suggested_filename.replace('-', '_')
+                                temp_filepath = date_folder / clean_filename
                                 
-                                # Remove the ZIP file after extraction
-                                filepath.unlink()
-                                print("ZIP file extracted and removed")
-                            except Exception as e:
-                                error_msg = f"Error extracting ZIP file: {e}"
-                                print(error_msg)
-                                self.errors.append(error_msg)
-                        else:
-                            # Single PDF file
-                            self.downloaded_files.append(filepath)
-                            print(f"Extracted {1} file(s)")
-                            print(f"  - {suggested_filename}")
-                        
-                    except Exception as download_error:
-                        # If download didn't work, PDF likely opened in new tab or current page navigated
-                        print(f"Download event not triggered, waiting for page navigation...")
-                        
-                        # Click the button if not already clicked
-                        if 'download_info' not in locals():
-                            await download_button.click()
-                            print("Clicked 'Download Selected' button")
-                        
-                        # Wait for navigation or new page
-                        await asyncio.sleep(3)
-                        
-                        # Check if current page has PDF
-                        current_url = page.url
-                        if '.pdf' in current_url.lower():
-                            print(f"PDF loaded in current page: {current_url}")
-                            
-                            # Get cookies for authentication
-                            cookies = await page.context.cookies()
-                            cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
-                            
-                            # Download the PDF using requests
-                            response = requests.get(current_url, cookies=cookie_dict, timeout=30)
-                            
-                            if response.status_code == 200:
-                                filename = current_url.split('/')[-1]
-                                if '?' in filename:
-                                    filename = filename.split('?')[0]
-                                if not filename.endswith('.pdf'):
-                                    filename = f"water_report_{datetime.now().strftime('%Y%m%d')}.pdf"
-                                
-                                # Replace hyphens with underscores in filename
-                                filename = filename.replace('-', '_')
-                                
-                                filepath = date_folder / filename
-                                with open(filepath, 'wb') as f:
+                                with open(temp_filepath, 'wb') as f:
                                     f.write(response.content)
                                 
-                                self.downloaded_files.append(filepath)
-                                print(f"Extracted {1} file(s)")
-                                print(f"  - {filename}")
-                            else:
-                                error_msg = f"Failed to download PDF: HTTP {response.status_code}"
-                                print(error_msg)
-                                self.errors.append(error_msg)
+                                self.downloaded_files.append(temp_filepath)
+                                print(f"  - Downloaded: {clean_filename}")
                         else:
-                            # Check for new pages/tabs
-                            pages = page.context.pages
-                            print(f"Found {len(pages)} page(s) open")
-                            
-                            for idx, p in enumerate(pages):
-                                url = p.url
-                                print(f"Page {idx}: {url}")
-                                if '.pdf' in url.lower():
-                                    print(f"Found PDF in page {idx}")
-                                    
-                                    # Get cookies
-                                    cookies = await page.context.cookies()
-                                    cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
-                                    
-                                    # Download the PDF
-                                    response = requests.get(url, cookies=cookie_dict, timeout=30)
-                                    
-                                    if response.status_code == 200:
-                                        filename = url.split('/')[-1]
-                                        if '?' in filename:
-                                            filename = filename.split('?')[0]
-                                        if not filename.endswith('.pdf'):
-                                            filename = f"water_report_{datetime.now().strftime('%Y%m%d')}.pdf"
-                                        
-                                        # Replace hyphens with underscores in filename
-                                        filename = filename.replace('-', '_')
-                                        
-                                        filepath = date_folder / filename
-                                        with open(filepath, 'wb') as f:
-                                            f.write(response.content)
-                                        
-                                        self.downloaded_files.append(filepath)
-                                        print(f"Extracted {1} file(s)")
-                                        print(f"  - {filename}")
-                                        
-                                        # Close the PDF tab if it's not the main page
-                                        if p != page:
-                                            await p.close()
-                                    break
-                            
-                            if not self.downloaded_files:
-                                error_msg = "No PDF found in any open pages"
-                                print(error_msg)
-                                self.errors.append(error_msg)
-                                return
+                            error_msg = f"Failed to download file: HTTP {response.status_code}"
+                            print(error_msg)
+                            self.errors.append(error_msg)
                     
-                    print(f"\nSuccessfully downloaded {len(self.downloaded_files)} report(s) to {date_folder}")
+                    except Exception as e:
+                        error_msg = f"Error during download: {str(e)}"
+                        print(error_msg)
+                        self.errors.append(error_msg)
+                    
+                    print(f"\nSuccessfully processed {len(self.downloaded_files)} report(s)")
                     
                 else:
                     print("Warning: 'Download Selected' button not found")
