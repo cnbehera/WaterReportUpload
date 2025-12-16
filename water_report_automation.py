@@ -30,6 +30,7 @@ class WaterReportAutomation:
         self.sharepoint_folder = os.getenv('SHAREPOINT_FOLDER_PATH')
         self.downloaded_files = []
         self.uploaded_files = []
+        self.uploaded_files_urls = {}  # Dictionary to store filename -> SharePoint URL mapping
         self.errors = []
         
         # Create download directory if it doesn't exist
@@ -131,32 +132,72 @@ class WaterReportAutomation:
             # Check if there are any reports available in the table
             print("Checking for available reports in the table...")
             
-            # Look for checkboxes in the water reports grid
-            checkbox_selector = 'input[id*="grdWaterReports_chkWater"]'
-            checkboxes = await page.locator(checkbox_selector).all()
+            # Look for all rows in the water reports grid
+            # We need to check the "report" column value for each row
+            table_selector = '#ContentPlaceHolder1_portalContent_grdWaterReports'
             
-            report_count = len(checkboxes)
+            # Get all rows in the table body (skip header row)
+            rows = await page.locator(f'{table_selector} tr[id*="grdWaterReports"]').all()
             
-            if report_count == 0:
+            if len(rows) == 0:
                 print("No water reports found in the table for the selected date range.")
                 print("Please verify the date range or check if reports are available on the portal.")
                 return
             
-            print(f"Found {report_count} water report(s) in the table")
+            print(f"Found {len(rows)} row(s) in the table")
             
-            # Click "Select All" checkbox to select all water reports
-            print("\nSelecting all water reports...")
-            try:
-                select_all_checkbox = page.locator('#ContentPlaceHolder1_portalContent_grdWaterReports_chkAllWater')
-                if await select_all_checkbox.count() > 0:
-                    await select_all_checkbox.click()
-                    print("Clicked 'Select All' checkbox")
-                    await asyncio.sleep(2)  # Wait for postback to complete
-                else:
-                    print("Warning: 'Select All' checkbox not found")
-            except Exception as e:
-                print(f"Error clicking 'Select All' checkbox: {e}")
-                self.errors.append(f"Failed to select all reports: {e}")
+            # Filter and select only reports with status "water" (not "in progress")
+            print("\nFiltering reports by status...")
+            selected_count = 0
+            skipped_count = 0
+            
+            for i, row in enumerate(rows):
+                try:
+                    # Get all cells in the row
+                    cells = await row.locator('td').all()
+                    
+                    # Find the "report" column value
+                    # The exact column index may vary, so we'll check cell text
+                    report_status = None
+                    checkbox = None
+                    
+                    # Look for checkbox in this row
+                    checkbox_in_row = row.locator('input[id*="chkWater"]')
+                    if await checkbox_in_row.count() > 0:
+                        checkbox = checkbox_in_row
+                    
+                    # Check each cell for the report status
+                    for cell in cells:
+                        cell_text = (await cell.inner_text()).strip()
+                        cell_text_lower = cell_text.lower()
+                        # Check for "Water" or "In Progress" (case-insensitive)
+                        if cell_text_lower in ['water', 'in progress']:
+                            report_status = cell_text_lower
+                            break
+                    
+                    # If we found both checkbox and status, decide whether to select
+                    if checkbox and report_status:
+                        if report_status == 'water':
+                            # Only select if status is "water"
+                            if not await checkbox.is_checked():
+                                await checkbox.click()
+                                await asyncio.sleep(0.5)  # Small delay between clicks
+                            selected_count += 1
+                            print(f"  Row {i+1}: Status = '{report_status}' - SELECTED")
+                        else:
+                            # Skip "in progress" reports
+                            skipped_count += 1
+                            print(f"  Row {i+1}: Status = '{report_status}' - SKIPPED")
+                    else:
+                        print(f"  Row {i+1}: Could not determine status or find checkbox")
+                        
+                except Exception as e:
+                    print(f"  Error processing row {i+1}: {e}")
+            
+            print(f"\nSummary: {selected_count} report(s) selected, {skipped_count} report(s) skipped")
+            
+            if selected_count == 0:
+                print("No reports with 'water' status found to download.")
                 return
             
             # Click "Download Selected" button
@@ -489,6 +530,15 @@ class WaterReportAutomation:
                     
                     if response.status_code in [200, 201]:
                         self.uploaded_files.append(filepath.name)
+                        
+                        # Extract the webUrl from the response to create a direct link
+                        response_data = response.json()
+                        web_url = response_data.get('webUrl', '')
+                        
+                        # Store the URL for this file
+                        if web_url:
+                            self.uploaded_files_urls[filepath.name] = web_url
+                        
                         print(f"  Successfully uploaded: {filepath.name}")
                     else:
                         error_msg = f"Error uploading {filepath.name}: HTTP {response.status_code} - {response.text}"
@@ -555,10 +605,24 @@ class WaterReportAutomation:
                 for i, f in enumerate(self.downloaded_files)
             ) if self.downloaded_files else "&nbsp;&nbsp;None"
             
-            uploaded_list = "<br>".join(
-                f"&nbsp;&nbsp;{i+1}. {clean_filename(f)}" 
-                for i, f in enumerate(self.uploaded_files)
-            ) if self.uploaded_files else "&nbsp;&nbsp;None"
+            # Create uploaded list with clickable links to SharePoint
+            if self.uploaded_files:
+                uploaded_items = []
+                for i, filename in enumerate(self.uploaded_files):
+                    clean_name = clean_filename(filename)
+                    # Check if we have a SharePoint URL for this file
+                    if filename in self.uploaded_files_urls:
+                        sharepoint_url = self.uploaded_files_urls[filename]
+                        # Create clickable link
+                        uploaded_items.append(
+                            f'&nbsp;&nbsp;{i+1}. <a href="{sharepoint_url}" style="color: #007bff; text-decoration: none;">{clean_name}</a>'
+                        )
+                    else:
+                        # No URL available, just show filename
+                        uploaded_items.append(f"&nbsp;&nbsp;{i+1}. {clean_name}")
+                uploaded_list = "<br>".join(uploaded_items)
+            else:
+                uploaded_list = "&nbsp;&nbsp;None"
             
             error_list = "<br>".join(
                 f"&nbsp;&nbsp;• {e}" 
