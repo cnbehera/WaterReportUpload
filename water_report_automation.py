@@ -138,38 +138,34 @@ class WaterReportAutomation:
             
             # Get all rows in the table body (skip header row)
             # Use tbody tr selector as confirmed by debug script
-            rows = await page.locator(f'{table_selector} tbody tr').all()
-            
-            print(f"DEBUG: Found {len(rows)} row(s) in tbody")
-            
-            if len(rows) == 0:
-                print("No water reports found in the table for the selected date range.")
-                print("Please verify the date range or check if reports are available on the portal.")
-                return
-            
-            # Check if the only row is the "No Water Reports Found" message
-            if len(rows) == 1:
-                first_row_text = await rows[0].inner_text()
-                print(f"DEBUG: First row text: '{first_row_text}'")
-                if "no water reports found" in first_row_text.lower():
-                    print("No water reports found in the table for the selected date range.")
-                    print("Please verify the date range or check if reports are available on the portal.")
-                    return
-            
-            print(f"Found {len(rows)} row(s) in the table")
-            
             # Filter and select only reports with status "water" (not "in progress")
             print("\nFiltering reports by status...")
             selected_count = 0
             skipped_count = 0
             
-            for i, row in enumerate(rows):
+            # Use index-based iteration to avoid stale element references if the page updates
+            rows_locator = page.locator(f'{table_selector} tbody tr')
+            row_count = await rows_locator.count()
+            print(f"Found {row_count} row(s) in the table")
+            
+            for i in range(row_count):
                 try:
+                    # Re-query the row to ensure we have a fresh handle
+                    row = rows_locator.nth(i)
+                    
+                    # Get row text to check for header
+                    row_text = await row.inner_text()
+                    row_text_clean = row_text.strip().lower()
+                    
+                    # Skip header row
+                    if "date" in row_text_clean and "grower" in row_text_clean and "report" in row_text_clean:
+                        print(f"  Row {i+1}: Header row - SKIPPED")
+                        continue
+                        
                     # Get all cells in the row
                     cells = await row.locator('td').all()
                     
                     # Find the "report" column value
-                    # The exact column index may vary, so we'll check cell text
                     report_status = None
                     checkbox = None
                     
@@ -193,7 +189,8 @@ class WaterReportAutomation:
                             # Only select if status is "water"
                             if not await checkbox.is_checked():
                                 await checkbox.click()
-                                await asyncio.sleep(0.5)  # Small delay between clicks
+                                # Small delay to allow for any potential UI updates
+                                await asyncio.sleep(0.5)
                             selected_count += 1
                             print(f"  Row {i+1}: Status = '{report_status}' - SELECTED")
                         else:
@@ -201,7 +198,7 @@ class WaterReportAutomation:
                             skipped_count += 1
                             print(f"  Row {i+1}: Status = '{report_status}' - SKIPPED")
                     else:
-                        print(f"  Row {i+1}: Could not determine status or find checkbox")
+                        print(f"  Row {i+1}: Could not determine status or find checkbox (Text: {row_text.strip()[:50]}...)")
                         
                 except Exception as e:
                     print(f"  Error processing row {i+1}: {e}")
