@@ -30,6 +30,7 @@ class WaterReportAutomation:
         self.sharepoint_folder = os.getenv('SHAREPOINT_FOLDER_PATH')
         self.downloaded_files = []
         self.uploaded_files = []
+        self.skipped_files = []  # Files that already exist in SharePoint
         self.uploaded_files_urls = {}  # Dictionary to store filename -> SharePoint URL mapping
         self.errors = []
         
@@ -455,6 +456,25 @@ class WaterReportAutomation:
                     # Construct upload URL
                     # Format: /drives/{drive-id}/root:/{folder-path}/{filename}:/content
                     upload_path = f"{folder_path}/{filepath.name}" if folder_path else filepath.name
+                    
+                    # Check if file already exists
+                    check_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{upload_path}"
+                    check_response = requests.get(check_url, headers=headers)
+                    
+                    if check_response.status_code == 200:
+                        print(f"  File already exists in SharePoint. Skipping upload.")
+                        self.skipped_files.append(filepath.name)
+                        
+                        # Get the webUrl for the existing file
+                        response_data = check_response.json()
+                        web_url = response_data.get('webUrl', '')
+                        if web_url:
+                            self.uploaded_files_urls[filepath.name] = web_url
+                            
+                        continue
+                    
+                    # File doesn't exist, proceed with upload
+                    print(f"  Uploading to SharePoint...")
                     upload_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{upload_path}:/content"
                     
                     # Read file content
@@ -491,7 +511,7 @@ class WaterReportAutomation:
                     print(error_msg)
                     self.errors.append(error_msg)
             
-            print(f"Successfully uploaded {len(self.uploaded_files)} file(s) to SharePoint")
+            print(f"Upload summary: {len(self.uploaded_files)} uploaded, {len(self.skipped_files)} skipped")
             
         except Exception as e:
             error_msg = f"SharePoint Graph API error: {str(e)}"
@@ -517,7 +537,9 @@ class WaterReportAutomation:
                 return
             
             # Determine status
-            if not self.errors and self.downloaded_files and len(self.uploaded_files) == len(self.downloaded_files):
+            total_processed = len(self.uploaded_files) + len(self.skipped_files)
+            
+            if not self.errors and self.downloaded_files and total_processed == len(self.downloaded_files):
                 status = "SUCCESS"
                 subject = "✅ Water Reports Automation - Success"
                 status_color = "#28a745"  # Green
@@ -525,7 +547,7 @@ class WaterReportAutomation:
                 status = "NO REPORTS FOUND"
                 subject = "ℹ️ Water Reports Automation - No Reports Found"
                 status_color = "#17a2b8"  # Blue
-            elif self.downloaded_files and self.uploaded_files:
+            elif self.downloaded_files and total_processed > 0:
                 status = "PARTIAL SUCCESS"
                 subject = "⚠️ Water Reports Automation - Partial Success"
                 status_color = "#ffc107"  # Yellow
@@ -564,6 +586,24 @@ class WaterReportAutomation:
                 uploaded_list = "<br>".join(uploaded_items)
             else:
                 uploaded_list = "&nbsp;&nbsp;None"
+            
+            # Create skipped files list
+            if self.skipped_files:
+                skipped_items = []
+                for i, filename in enumerate(self.skipped_files):
+                    clean_name = clean_filename(filename)
+                    # Check if we have a SharePoint URL for this file
+                    if filename in self.uploaded_files_urls:
+                        sharepoint_url = self.uploaded_files_urls[filename]
+                        # Create clickable link
+                        skipped_items.append(
+                            f'&nbsp;&nbsp;{i+1}. <a href="{sharepoint_url}" style="color: #6c757d; text-decoration: none;">{clean_name}</a>'
+                        )
+                    else:
+                        skipped_items.append(f"&nbsp;&nbsp;{i+1}. {clean_name}")
+                skipped_list = "<br>".join(skipped_items)
+            else:
+                skipped_list = "&nbsp;&nbsp;None"
             
             error_list = "<br>".join(
                 f"&nbsp;&nbsp;• {e}" 
@@ -604,6 +644,11 @@ class WaterReportAutomation:
                         <div class="section">
                             <div class="section-title">Uploaded to SharePoint ({len(self.uploaded_files)}):</div>
                             {uploaded_list}
+                        </div>
+                        
+                        <div class="section">
+                            <div class="section-title">Skipped (Already Exists) ({len(self.skipped_files)}):</div>
+                            {skipped_list}
                         </div>
                         
                         <div class="section">
